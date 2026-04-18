@@ -65,10 +65,8 @@ def get_plate_corners(crop):
             pts = approx.reshape(4, 2)
             (x, y, w, h) = cv2.boundingRect(pts)
             ratio = w/float(h)
-
             if 2 < ratio < 6:
                 return pts
-
     h, w = crop.shape[:2]
     return np.array([[0, 0], [w, 0], [w, h], [0, h]])
 
