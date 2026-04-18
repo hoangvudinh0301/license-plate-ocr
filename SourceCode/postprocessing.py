@@ -67,7 +67,6 @@ def get_best_result(new_text, new_score, track_id):
         return new_text
 
     old_text, old_score = stable_results[track_id]
-
     if new_score > old_score or len(new_text) > len(old_text):
         stable_results[track_id] = (new_text, new_score)
 
