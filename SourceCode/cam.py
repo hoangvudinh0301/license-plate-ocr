@@ -51,6 +51,6 @@ while cap.isOpened():
     if len(frames) < 300:
         frames.append(cv2.cvtColor(frame_display, cv2.COLOR_BGR2RGB))
     count += 1
-imageio.mimsave("plate_recognition.gif", frames, fps=15)
+imageio.mimsave("plate_recognition_video.gif", frames, fps=15)
 cap.release()
 cv2.destroyAllWindows()
