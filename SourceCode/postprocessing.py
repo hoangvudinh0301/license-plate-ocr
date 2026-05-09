@@ -1,4 +1,5 @@
 import re
+import numpy as np
 
 def clean_text(text):
     if not text:
@@ -6,8 +7,6 @@ def clean_text(text):
     text = text.upper()
     text = re.sub(r'[^A-Z0-9\n]', '', text)
     return text.strip()
-
-import numpy as np
 
 def extract_lines(res):
     if not res or not res[0]:

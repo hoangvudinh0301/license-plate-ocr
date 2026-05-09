@@ -28,20 +28,23 @@ def detect_plate(outputs, img, ratio, pad, conf_thres=0.5, nms_thres=0.4):
         return None
     dw, dh = pad
     all_boxes = []
-    for row in boxes_raw:
+    all_scores = []
+    for i, row in enumerate(boxes_raw):
         x, y, w, h = row
-        left = int((x - w / 2 - dw) / ratio)
-        top = int((y - h / 2 - dh) /ratio)
-        width = int(w / ratio)
-        height = int(h / ratio)
-        all_boxes.append([left, top, width, height])
+        x1 = int((x - w / 2 - dw) / ratio)
+        y1 = int((y - h / 2 - dh) /ratio)
+        x2 = int((x + w / 2 - dw) / ratio)
+        y2 = int((y + h / 2 - dh) / ratio)
+        all_boxes.append([x1, y1, x2, y2])
+        all_scores.append(scores[i])
 
     indices = cv2.dnn.NMSBoxes(all_boxes, scores.tolist(), conf_thres, nms_thres)
-    results_boxes = []
+    final_detections = []
     if len(indices) > 0:
         for i in indices.flatten():
-            results_boxes.append(all_boxes[i])
-    return results_boxes
+            res = all_boxes[i] + [all_scores[i]]
+            final_detections.append(res)
+    return final_detections
 
 def preprocess_rec(img, imgH=48, imgW=320):
     h, w = img.shape[:2]
@@ -62,6 +65,10 @@ def load_chars(dict_path):
 
 def unclip(box, unclip_ratio=1.5):
     poly = Polygon(box)
+    if poly.length == 0:
+        return np.array([])
+    if poly.area == 0:
+        return np.array([])
     distance = poly.area * unclip_ratio / poly.length
     offset = pyclipper.PyclipperOffset()
     box_list = box.astype(np.intp).tolist()
@@ -93,6 +100,8 @@ def get_boxes_from_map(pred, thresh=0.3, box_thresh=0.5, unclip_ratio=1.5):
         if box_score < box_thresh:
             continue
         box = unclip(box, unclip_ratio)
+        if len(box) == 0:
+            continue
         box[:, 0] = np.clip(box[:, 0], 0, w)
         box[:, 1] = np.clip(box[:, 1], 0, h)
         boxes.append(box.astype(np.int32))
