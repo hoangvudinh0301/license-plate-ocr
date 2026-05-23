@@ -1,9 +1,8 @@
 import cv2
 import numpy as np
-import pyclipper
-from shapely.geometry import Polygon
+import re
 
-def letterbox(img, new_shape=(640, 640)):
+def letterbox(img, new_shape=(1024, 1024)):
     shape = img.shape[:2]
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
     new_unpad = (int(round(shape[1] * r)), int(round(shape[0] *r)))
@@ -14,37 +13,73 @@ def letterbox(img, new_shape=(640, 640)):
                              cv2.BORDER_CONSTANT, value=(114, 114, 114))
     return img, r, (dw, dh)
 
-def detect_plate(outputs, img, ratio, pad, conf_thres=0.5, nms_thres=0.4):
+def detect_plates(outputs, ratio, pad, conf_thres=0.5, nms_thres=0.4):
     pred = outputs[0]
     if pred.shape[0] == 1:
         pred = np.squeeze(pred, axis=0)
     pred = pred.T
-    boxes_raw = pred[:, :4]
-    scores = np.max(pred[:, 4:], axis=1)
-    mask = scores > conf_thres
-    boxes_raw = boxes_raw[mask]
-    scores = scores[mask]
-    if len(boxes_raw) == 0:
-        return None
     dw, dh = pad
-    all_boxes = []
-    all_scores = []
-    for i, row in enumerate(boxes_raw):
-        x, y, w, h = row
-        x1 = int((x - w / 2 - dw) / ratio)
-        y1 = int((y - h / 2 - dh) /ratio)
-        x2 = int((x + w / 2 - dw) / ratio)
-        y2 = int((y + h / 2 - dh) / ratio)
-        all_boxes.append([x1, y1, x2, y2])
-        all_scores.append(scores[i])
-
-    indices = cv2.dnn.NMSBoxes(all_boxes, scores.tolist(), conf_thres, nms_thres)
-    final_detections = []
+    boxes = []
+    scores = []
+    keypoints = []
+    for row in pred:
+        x, y, w, h = row[:4]
+        conf = row[4]
+        if conf < conf_thres:
+            continue
+        left = int((x - w / 2 - dw) / ratio)
+        top = int((y - h / 2 - dh) / ratio)
+        width = int(w / ratio)
+        height = int(h / ratio)
+        boxes.append([left, top, width, height])
+        scores.append(float(conf))
+        kpts = row[5:]
+        pts = []
+        for i in range(0, len(kpts), 3):
+            kx = (kpts[i] - dw)/ratio
+            ky = (kpts[i + 1] - dh)/ratio
+            kc = kpts[i + 2]
+            pts.append((float(kx), float(ky), float(kc)))
+        keypoints.append(pts)
+    indices = cv2.dnn.NMSBoxes(boxes, scores, conf_thres, nms_thres)
+    results = []
     if len(indices) > 0:
         for i in indices.flatten():
-            res = all_boxes[i] + [all_scores[i]]
-            final_detections.append(res)
-    return final_detections
+            results.append({
+                "box": boxes[i],
+                "score": scores[i],
+                "kpts": keypoints[i]
+            })
+    return results
+
+def warp_transform(img, pts):
+    pts = np.array(pts, dtype=np.float32)
+
+    tl, tr, br, bl = pts
+
+    width_top = np.linalg.norm(tr - tl)
+    width_bottom = np.linalg.norm(br - bl)
+    max_w = int(max(width_top, width_bottom))
+
+    height_left = np.linalg.norm(bl - tl)
+    height_right = np.linalg.norm(br - tr)
+    max_h = int(max(height_left, height_right))
+
+    padding_w = int(max_w * 0.05)
+    padding_h = int(max_h * 0.05)
+    output_w = max_w + padding_w * 2
+    output_h = max_h + padding_h * 2
+
+    dst = np.array([
+        [padding_w, padding_h],
+        [padding_w + max_w - 1, padding_h],
+        [padding_w + max_w - 1, padding_h + max_h - 1],
+        [padding_w, padding_h + max_h - 1]
+    ], dtype=np.float32)
+
+    M = cv2.getPerspectiveTransform(pts, dst)
+    warped = cv2.warpPerspective(img,M,(output_w, output_h))
+    return warped
 
 def preprocess_rec(img, imgH=48, imgW=320):
     h, w = img.shape[:2]
@@ -63,50 +98,6 @@ def load_chars(dict_path):
     with open(dict_path, "r", encoding="utf-8") as f:
         return [line.strip() for line in f.readlines()]
 
-def unclip(box, unclip_ratio=1.5):
-    poly = Polygon(box)
-    if poly.length == 0:
-        return np.array([])
-    if poly.area == 0:
-        return np.array([])
-    distance = poly.area * unclip_ratio / poly.length
-    offset = pyclipper.PyclipperOffset()
-    box_list = box.astype(np.intp).tolist()
-    offset.AddPath(box_list, pyclipper.JT_MITER, pyclipper.ET_CLOSEDPOLYGON)
-    expanded = offset.Execute(distance)
-    if len(expanded) == 0:
-        return box
-    return np.array(expanded[0])
-
-def get_mini_boxes_score(pred, box):
-    mask = np.zeros(pred.shape, dtype=np.uint8)
-    cv2.fillPoly(mask, [box.astype(np.int32)], 1)
-    return cv2.mean(pred, mask=mask)[0]
-
-def box_to_center(box):
-    return np.mean(box, axis=0)
-
-def get_boxes_from_map(pred, thresh=0.3, box_thresh=0.5, unclip_ratio=1.5):
-    if len(pred.shape) == 4:
-        pred = pred[0, 0, :, :]
-    mask = (pred > thresh).astype(np.uint8) * 255
-    contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    boxes = []
-    h, w = pred.shape
-    for cnt in contours:
-        rect = cv2.minAreaRect(cnt)
-        box = cv2.boxPoints(rect).astype(np.float32)
-        box_score = get_mini_boxes_score(pred, box)
-        if box_score < box_thresh:
-            continue
-        box = unclip(box, unclip_ratio)
-        if len(box) == 0:
-            continue
-        box[:, 0] = np.clip(box[:, 0], 0, w)
-        box[:, 1] = np.clip(box[:, 1], 0, h)
-        boxes.append(box.astype(np.int32))
-    return boxes
-
 def ctc_decode(preds, chars):
     preds_idx = np.argmax(preds, axis=2)[0]
     res = []
@@ -114,3 +105,10 @@ def ctc_decode(preds, chars):
         if preds_idx[i] > 0 and (i == 0 or preds_idx[i] != preds_idx[i-1]):
             res.append(chars[preds_idx[i] - 1])
     return "".join(res)
+
+def clean_text(text):
+    if not text:
+        return ""
+    text = text.upper()
+    text = re.sub(r'[^A-Z0-9\n]', '', text)
+    return text.strip()

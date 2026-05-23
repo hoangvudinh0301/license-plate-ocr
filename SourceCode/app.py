@@ -1,7 +1,4 @@
 import gradio as gr
-import cv2
-import numpy as np
-
 from img import process_image
 from cam import process_video
 
