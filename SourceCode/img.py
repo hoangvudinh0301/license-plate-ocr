@@ -6,7 +6,7 @@ from function.onnx_utils import load_chars, letterbox, detect_plates, warp_trans
 
 YOLO_MODEL = "model/plate_keypoint_detection.onnx"
 PP_REC_MODEL = "model/ppocr_rec_sim.onnx"
-DICT_PATH = "en_dict.txt"
+DICT_PATH = "dict/en_dict.txt"
 OUTPUT_DIR = "results"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -58,3 +58,6 @@ def process_image(image):
     cv2.imwrite(output_path, img)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     return img, "\n".join(plate_texts)
+
+# image = cv2.imread("samples/img_1.png")
+# process_image(image)

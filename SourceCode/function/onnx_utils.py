@@ -65,7 +65,7 @@ def warp_transform(img, pts):
     height_right = np.linalg.norm(br - tr)
     max_h = int(max(height_left, height_right))
 
-    padding_w = int(max_w * 0.05)
+    padding_w = int(max_w * 0.1)
     padding_h = int(max_h * 0.05)
     output_w = max_w + padding_w * 2
     output_h = max_h + padding_h * 2
@@ -81,22 +81,34 @@ def warp_transform(img, pts):
     warped = cv2.warpPerspective(img,M,(output_w, output_h))
     return warped
 
-def preprocess_rec(img, imgH=48, imgW=320):
-    h, w = img.shape[:2]
+def preprocess_rec(img, target_height=48, target_width=320):
+    h, w, c = img.shape
     ratio = w / float(h)
-    new_w = min(int(imgH * ratio), imgW)
-    resized = cv2.resize(img, (new_w, imgH))
-    padded = np.zeros((imgH, imgW, 3), dtype=np.uint8)
-    padded[:, :new_w, :] = resized
-    padded = padded.astype(np.float32) / 255.0
-    padded = (padded - 0.5) / 0.5
-    padded = padded.transpose(2, 0, 1)
-    padded = np.expand_dims(padded, axis=0)
-    return padded
+    resized_w = int(np.ceil(target_height * ratio))
+    resized_w = min(resized_w, target_width)
+    img_resized = cv2.resize(img, (resized_w, target_height))
+    img_resized = img_resized.astype('float32')
+    img_resized = img_resized / 255.0
+    img_resized -= 0.5
+    img_resized /= 0.5
+    img_resized = np.transpose(img_resized, (2, 0, 1))
+    valid_data = np.zeros((c, target_height, target_width), dtype=np.float32)
+    valid_data[:, :, 0:resized_w] = img_resized
+    rec_in = np.expand_dims(valid_data, axis=0)
+    return rec_in
 
 def load_chars(dict_path):
     with open(dict_path, "r", encoding="utf-8") as f:
         return [line.strip() for line in f.readlines()]
+
+def load_chars_lao(dict_path):
+    chars = ["blank"]
+    with open(dict_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip("\n").strip("\r")
+            chars.append(line)
+    chars.append(" ")
+    return chars
 
 def ctc_decode(preds, chars):
     preds_idx = np.argmax(preds, axis=2)[0]
@@ -105,6 +117,27 @@ def ctc_decode(preds, chars):
         if preds_idx[i] > 0 and (i == 0 or preds_idx[i] != preds_idx[i-1]):
             res.append(chars[preds_idx[i] - 1])
     return "".join(res)
+
+def ctc_decode_lao(preds, chars):
+    preds_idx = preds.argmax(axis=2)
+    preds_prob = preds.max(axis=2)
+
+    text = ""
+    last_idx = 0
+    scores = []
+
+    for idx, prob in zip(preds_idx[0], preds_prob[0]):
+        if idx == 0:
+            last_idx = idx
+            continue
+        if idx == last_idx:
+            continue
+        if idx < len(chars):
+            text += chars[idx]
+            scores.append(prob)
+        last_idx = idx
+    avg_score = np.mean(scores) if scores else 0.0
+    return text, avg_score
 
 def clean_text(text):
     if not text:
