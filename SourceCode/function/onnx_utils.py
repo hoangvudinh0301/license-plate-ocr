@@ -1,6 +1,9 @@
 import cv2
 import numpy as np
 import re
+from torchvision import transforms
+import onnxruntime as ort
+from PIL import ImageDraw, ImageFont, Image
 
 def letterbox(img, new_shape=(1024, 1024)):
     shape = img.shape[:2]
@@ -98,10 +101,6 @@ def preprocess_rec(img, target_height=48, target_width=320):
     return rec_in
 
 def load_chars(dict_path):
-    with open(dict_path, "r", encoding="utf-8") as f:
-        return [line.strip() for line in f.readlines()]
-
-def load_chars_lao(dict_path):
     chars = ["blank"]
     with open(dict_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -111,14 +110,6 @@ def load_chars_lao(dict_path):
     return chars
 
 def ctc_decode(preds, chars):
-    preds_idx = np.argmax(preds, axis=2)[0]
-    res = []
-    for i in range(len(preds_idx)):
-        if preds_idx[i] > 0 and (i == 0 or preds_idx[i] != preds_idx[i-1]):
-            res.append(chars[preds_idx[i] - 1])
-    return "".join(res)
-
-def ctc_decode_lao(preds, chars):
     preds_idx = preds.argmax(axis=2)
     preds_prob = preds.max(axis=2)
 
@@ -136,12 +127,49 @@ def ctc_decode_lao(preds, chars):
             text += chars[idx]
             scores.append(prob)
         last_idx = idx
-    avg_score = np.mean(scores) if scores else 0.0
-    return text, avg_score
+    return text
+
+CLASSIFY_TRANSFORM = transforms.Compose([
+    transforms.Resize((244, 244)),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
+
+def plate_classification(img, session):
+    classes = ["China", "Lao", "VietNam"]
+    transform = transforms.Compose([
+        transforms.Resize((244, 244)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+    img_tensor = transform(img).unsqueeze(0).numpy()
+    input_name = session.get_inputs()[0].name
+    pred = session.run(None, {input_name: img_tensor.astype(np.float32)})[0]
+    cls = np.argmax(pred, axis=1)[0]
+    return classes[cls]
+
 
 def clean_text(text):
     if not text:
         return ""
     text = text.upper()
-    text = re.sub(r'[^A-Z0-9\n]', '', text)
+    bad_chars = r"[·\.,\/;'_\[\]\{\}\(\)\-\+=\*&\^%\$#@!~`\?<>\:""]"
+    text = re.sub(bad_chars, '', text)
     return text.strip()
+
+def put_unicode_text(img, text, pos, font_path, font_size=24, color=(0, 255, 0)):
+    img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(img_pil)
+    try:
+        font = ImageFont.truetype(font_path, font_size)
+    except IOError:
+        font = ImageFont.load_default()
+    rgb_color = (color[2], color[1], color[0])
+    draw.text(pos, text, font=font, fill=rgb_color)
+    return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)

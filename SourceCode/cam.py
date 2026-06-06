@@ -3,24 +3,50 @@ import numpy as np
 import onnxruntime as ort
 import cv2
 from function.onnx_utils import (load_chars, letterbox, warp_transform,
-                                 detect_plates, preprocess_rec, ctc_decode, clean_text)
+                                 detect_plates, preprocess_rec, ctc_decode, clean_text, plate_classification, put_unicode_text)
+from PIL import Image, ImageDraw, ImageFont
+import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
 
 YOLO_MODEL = "model/plate_keypoint_detection.onnx"
-PP_REC_MODEL = "model/ppocr_rec_sim.onnx"
-DICT_PATH = "dict/en_dict.txt"
+CLASSIFY_MODEL = "model/plate_classification.onnx"
+VN_REC_MODEL = "model/ppocr_rec_sim.onnx"
+CH_REC_MODEL = "model/china_rec.onnx"
+LA_REC_MODEL = "model/lao_rec.onnx"
+VN_DICT_PATH = "dict/en_dict.txt"
+CH_DICT_PATH = "dict/china_dict.txt"
+LA_DICT_PATH = "dict/laos_dict_fn.txt"
+
+FONT_MAPPING = {
+    "VietNam": "fonts/NotoSans_Condensed-Bold.ttf",
+    "Lao": "fonts/NotoSansLao_Condensed-Bold.ttf",
+    "China": "fonts/NotoSansSC-Bold.ttf"
+}
+
+OCR_CONFIG = {
+    "VietNam": {"model": VN_REC_MODEL, "dict": VN_DICT_PATH},
+    "China": {"model": CH_REC_MODEL, "dict": CH_DICT_PATH},
+    "Lao": {"model": LA_REC_MODEL, "dict": LA_DICT_PATH}
+}
 
 providers = ["CPUExecutionProvider"]
 session_yolo = ort.InferenceSession(YOLO_MODEL, providers=providers)
-session_rec = ort.InferenceSession(PP_REC_MODEL, providers=providers)
-CHARS = load_chars(DICT_PATH)
+sessions = {
+    nation: ort.InferenceSession(cfg["model"], providers=providers)
+    for nation, cfg in OCR_CONFIG.items()
+}
+session_cls = ort.InferenceSession(CLASSIFY_MODEL, providers=providers)
 
+DICT_DATA = {
+    nation: load_chars(cfg["dict"])
+    for nation, cfg in OCR_CONFIG.items()
+}
 cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1024)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 680)
 
 running = False
 frame_count = 0
-last_plate_text = ""
 
 while True:
     ret, frame = cap.read()
@@ -42,36 +68,47 @@ while True:
             x1, y1 = int(x), int(y)
             pts = np.array([[kx, ky] for kx, ky, kc in det["kpts"]], dtype=np.float32)
             warped = warp_transform(frame, pts)
+            warped_pil = Image.fromarray(warped)
+            nation = plate_classification(warped_pil, session_cls)
+            session_rec = sessions[nation]
+            input_shape = session_rec.get_inputs()[0].shape
+            model_height = input_shape[2] if isinstance(input_shape[2], int) else 48
+            model_width = input_shape[3] if isinstance(input_shape[3], int) else 320
+            CHARS = load_chars(OCR_CONFIG[nation]["dict"])
             h_p, w_p = warped.shape[:2]
             plate_preview = cv2.resize(warped, (w_p*2, h_p*2))
             px = 10
-            py = 80
-            display[
-                py:py + h_p*2,
-                px:px + w_p*2
-            ] = plate_preview
+            py = 100
+            display[py:py + h_p*2, px:px + w_p*2] = plate_preview
             if h_p > w_p * 0.45:
                 upper = warped[:h_p//2]
                 lower = warped[h_p//2:]
                 plate_text = ""
                 for crop in [upper, lower]:
-                    rec_in = preprocess_rec(crop)
+                    rec_in = preprocess_rec(crop, target_height=model_height, target_width=model_width)
                     if rec_in is None:
                         continue
                     preds = session_rec.run(None, {session_rec.get_inputs()[0].name: rec_in})[0]
                     plate_text += ctc_decode(preds, CHARS)
             else:
-                rec_in = preprocess_rec(warped)
+                rec_in = preprocess_rec(warped, target_height=model_height, target_width=model_width)
                 if rec_in is None:
                     continue
                 preds = session_rec.run(None, {session_rec.get_inputs()[0].name: rec_in})[0]
                 plate_text = ctc_decode(preds, CHARS)
 
             plate_text = clean_text(plate_text)
-            cv2.putText(display, f"Plate: {plate_text}", (20, 60), cv2.FONT_HERSHEY_COMPLEX, 0.7, (0, 255, 0), 2)
-            plate_texts.append(plate_text)
+            active_font = FONT_MAPPING.get(nation, "fonts/NotoSans_Condensed-Bold.ttf")
+            font = FontProperties(fname=active_font, size=16)
+            plt.imshow(cv2.cvtColor(warped, cv2.COLOR_RGB2BGR))
+            plt.title(f"Nation: {nation} | Plate: {plate_text}", fontproperties=font)
+            plt.axis("off")
+            plt.show()
+
+
     cv2.imshow("Realtime Lincense Plate Recognition", display)
     key = cv2.waitKey(1) & 0xFF
+
     if key == ord("s"): running = True
     elif key == ord("p"): running = False
     elif key == 27: break
