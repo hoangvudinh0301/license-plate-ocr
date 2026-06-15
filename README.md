@@ -111,7 +111,7 @@ lincense-plate-ocr/
 ### 1. Clone repository
 
 ```text
-
+git clone https://github.com/hoangvudinh0301/license-plate-ocr.git
 ```
 ### 2. Create the Python Environment
 
